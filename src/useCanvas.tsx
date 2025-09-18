@@ -1,85 +1,80 @@
-import { useEffect, useLayoutEffect, useRef } from "react";
+// useCanvas.ts
+import { useEffect, useRef } from "react";
 
-type UseCanvasOptions = {
-  onInit?: (ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement) => void;
-  onDraw?: (
-    ctx: CanvasRenderingContext2D,
-    frame: number,
-    elapsedMs: number
-  ) => void;
-  playing?: boolean;
-  pixelRatio?: number;
-};
+export type DrawFn = (
+  ctx: CanvasRenderingContext2D,
+  frame: number,
+  elapsedMs: number
+) => void;
+
 export function useCanvas({
   onInit,
   onDraw,
   playing = true,
-  pixelRatio = window.devicePixelRatio,
-}: UseCanvasOptions) {
+}: {
+  onInit?: (ctx: CanvasRenderingContext2D) => void;
+  onDraw: DrawFn;
+  playing?: boolean;
+}) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const frameRef = useRef(0);
-  const rafRef = useRef<number | null>(null);
-  const startTimeRef = useRef<number | null>(null);
+  const drawRef = useRef(onDraw);
+  const playingRef = useRef(playing);
 
-  const setupHiDPI = () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+  useEffect(() => {
+    drawRef.current = onDraw;
+  }, [onDraw]);
 
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    const cssWidth = canvas.clientWidth || canvas.width;
-    const cssHeight = canvas.clientHeight || canvas.height;
-    const ratio = pixelRatio ?? window.devicePixelRatio ?? 1;
-
-    const targetW = Math.floor(cssWidth * ratio);
-    const targetH = Math.floor(cssHeight * ratio);
-
-    if (canvas.width !== targetW || canvas.height !== targetH) {
-      canvas.width = targetW;
-      canvas.height = targetH;
-      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-    }
-
-    return ctx;
-  };
-
-  useLayoutEffect(() => {
-    const ctx = setupHiDPI();
-    if (ctx && onInit) {
-      onInit(ctx, canvasRef.current!);
-    }
-  }, [pixelRatio, onInit]);
+  useEffect(() => {
+    playingRef.current = playing;
+  }, [playing]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    const ctx = canvas?.getContext("2d");
-    if (!canvas || !ctx) return;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
 
-    let running = true;
-    const loop = (now: number) => {
-      if (!running) return;
-      if (startTimeRef.current === null) startTimeRef.current = now;
-
-      frameRef.current += 1;
-      onDraw?.(ctx, frameRef.current, now - startTimeRef.current);
-
-      if (playing) {
-        rafRef.current = requestAnimationFrame(loop);
-      } else {
-        rafRef.current = null;
+    // size the backing store to match CSS size × devicePixelRatio
+    const setSize = () => {
+      const cssW = Math.max(1, canvas.clientWidth || 320);
+      const cssH = Math.max(1, canvas.clientHeight || 200);
+      const dpr = window.devicePixelRatio || 1;
+      if (
+        canvas.width !== Math.floor(cssW * dpr) ||
+        canvas.height !== Math.floor(cssH * dpr)
+      ) {
+        canvas.width = Math.floor(cssW * dpr);
+        canvas.height = Math.floor(cssH * dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       }
     };
-    rafRef.current = requestAnimationFrame(loop);
+    setSize();
+    const ro = new ResizeObserver(setSize);
+    ro.observe(canvas);
+
+    onInit?.(ctx);
+
+    let frame = 0;
+    const start = performance.now();
+    let raf = 0;
+    const loop = (now: number) => {
+      if (playingRef.current) {
+        frame++;
+        try {
+          drawRef.current(ctx, frame, now - start);
+        } catch (e) {
+          console.error(e);
+        }
+      }
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
 
     return () => {
-      running = false;
-      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-      frameRef.current = 0;
-      startTimeRef.current = null;
+      cancelAnimationFrame(raf);
+      ro.disconnect();
     };
-  }, [playing, onDraw]);
+  }, [onInit]);
 
   return canvasRef;
 }
